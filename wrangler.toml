@@ -2,39 +2,10 @@ name = "http-api-d1"
 main = "src/worker.ts"
 compatibility_date = "2023-06-10"
 
-# # KV Namespace binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/kv
-# [[kv_namespaces]]
-# binding = "MY_KV_NAMESPACE"
-# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# Replace this with your Cloudflare account ID
+account_id = "d458dbe698b8eef41837f941d73bc5b3"
 
-# # Durable Object binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/durable-objects
-# [[durable_objects]]
-# binding = "MY_DURABLE_OBJECT"
-# class_name = "MyDurableObject"
-
-# # Bucket binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/kv#bucket
-# [[buckets]]
-# binding = "MY_BUCKET"
-# name = "my-bucket"
-# bucket_id = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-
-# # Service binding - For more information: https://developers.cloudflare.com/workers/platform/services
-# [[routes]]
-# binding = "MY_SERVICE"
-# pattern = "/api/*"
-# script = "api.js"
-
-# # Queue binding - For more information: https://developers.cloudflare.com/workers/runtime-apis/queues
-# [[queues]]
-# binding = "MY_QUEUE"
-# name = "my-queue"
-# zone_id = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-
-# [env.production]
-# MY_VARIABLE = "production_value"
-
-# [env.staging]
-# MY_VARIABLE = "staging_value"
-
-# [env.shared]
-# SHARED_VARIABLE = "shared_value"
+[[d1_databases]]
+binding = "DB"
+database_name = "db-enam"
+database_id = "c89db32e-83f4-4e62-8cd7-7c8f97659029"

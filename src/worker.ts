@@ -1,32 +1,188 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+import { Hono } from "hono";
+import { bearerAuth } from "hono/bearer-auth";
+import { logger } from "hono/logger";
+import { prettyJSON } from "hono/pretty-json";
+import { z } from "zod";
+import { zValidator } from "@hono/zod-validator";
 
-export interface Env {
-	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
-	// MY_KV_NAMESPACE: KVNamespace;
+const schema = z.object({
+	name: z.string(),
+	age: z.number(),
+});
+
+// Bindings to our resources.
+type Bindings = {
+	// The D1 database we want to expose over HTTP.
+	DB: D1Database;
+	// The secret our HTTP client needs to pass in to be valid.
+	// Must be at least 32 bytes long to ensure sufficiently random.
 	//
-	// Example binding to Durable Object. Learn more at https://developers.cloudflare.com/workers/runtime-apis/durable-objects/
-	// MY_DURABLE_OBJECT: DurableObjectNamespace;
-	//
-	// Example binding to R2. Learn more at https://developers.cloudflare.com/workers/runtime-apis/r2/
-	// MY_BUCKET: R2Bucket;
-	//
-	// Example binding to a Service. Learn more at https://developers.cloudflare.com/workers/runtime-apis/service-bindings/
-	// MY_SERVICE: Fetcher;
-	//
-	// Example binding to a Queue. Learn more at https://developers.cloudflare.com/queues/javascript-apis/
-	// MY_QUEUE: Queue;
+	// Tip: generate a random secret on the command-line:
+	// $ openssl rand -base64 32
+	APP_SECRET: string;
+};
+
+const PreparedQuery = z.object({
+	// We set a reasonable limit on the statement length we'll accept.
+	queryText: z.string().min(1).max(1e4).trim(),
+	params: z.any().array().optional(),
+});
+
+const ExecQuery = z.object({
+	// Allow 100,000 (1e6) bytes for exec queries.
+	queryText: z.string().min(1).max(1e6).trim(),
+});
+
+const BatchQuery = z.object({
+	batch: PreparedQuery.array().nonempty(),
+});
+
+const ERR_PARAMS_NOT_VALID_ENDPOINT = "query parameters not valid on this endpoint";
+
+interface QueryResponse {
+	results?: Array<any>;
+	error?: string;
+	meta?: Array<any>;
 }
+
+interface ExecResponse {
+	count: number;
+	durationMs: number;
+}
+
+const QueryResponse = z.object({
+	results: z.any().array().optional(),
+	error: z.string().optional(),
+	meta: z.any().optional(),
+});
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		return new Response('Hello World!');
+		const app = new Hono();
+		app.use("*", prettyJSON());
+		app.use("*", logger());
+
+		if (!env.DB) {
+			throw new Error(`A D1 database is not connected to the API. Confirm you have a [[d1_database]] binding called 'DB' created.`);
+		}
+
+		// `env.APP_SECRET` is the secret key we configured as a Wrangler secret
+		// e.g. wrangler secret put APP_SECRET
+		const authToken = env.APP_SECRET;
+		if (!authToken || authToken.length < 16) {
+			throw new Error(`'APP_SECRET' missing or shorter than 32 bytes (length: ${authToken?.length}): must configure a secret first.`);
+		}
+
+		// Hono's route grouping API allows us to separate our `/query/*` routes.
+		// Docs: https://hono.dev/api/routing#grouping
+		const query = new Hono<{ Bindings: Bindings }>();
+
+		// The Bearer authentication middleware protects all routes in our
+		// "query" group and requires an Authorization HTTP header with our
+		// token to be provided.
+		//
+		// This is ideal for connecting a non-Workers backend, such as an
+		// existing Node.js app, Go API, or Rust backend, to D1.
+		//
+		// Important: Clients are presumed to be trusted.
+		query.use("*", bearerAuth({ token: authToken }));
+
+		// A single /all/ endpoint that accepts a single query and (optional)
+		// parameters to bind.
+		//
+		// Returns an array of objects, with each object representing a result
+		// row.
+		//
+		// Docs: https://developers.cloudflare.com/d1/platform/client-api/#await-stmtall-column-
+		query.post("/all/", zValidator("json", PreparedQuery), async (c) => {
+			let resp: QueryResponse;
+			try {
+				let query = c.req.valid("json");
+				let stmt = c.env.DB.prepare(query.queryText);
+				if (query.params) {
+					stmt = stmt.bind(query.params);
+				}
+
+				let result = await stmt.all();
+				resp = {
+					results: result.results,
+					meta: result.meta,
+				};
+			} catch (err) {
+				let msg = `failed to run query: ${err}`;
+				console.error(msg);
+				return c.json({ error: msg }, 500);
+			}
+
+			return c.json(resp, 200);
+		});
+
+		// Exec a single query, or multiple queries (separated by a newline character).
+		// Useful for single-shot queries or batch inserts.
+		//
+		// Returns the number of queries executed and the duration. Does not
+		// return query results.
+		//
+		// Docs: https://developers.cloudflare.com/d1/platform/client-api/#await-dbexec
+		query.post("/exec/", zValidator("json", ExecQuery), async (c) => {
+			let resp: ExecResponse;
+			try {
+				let query = c.req.valid("json");
+				let out = await c.env.DB.exec(query.queryText);
+				resp = {
+					// @ts-expect-error Property 'count' does not exist on type 'D1Result<unknown>'
+					count: out?.count || 0,
+					// @ts-expect-error Property 'duration' does not exist on type 'D1Result<unknown>'
+					durationMs: out?.duration || 0,
+				};
+			} catch (err) {
+				// handle error
+				console.error(`failed to exec query: ${err}`);
+				return c.json({ error: err }, 500);
+			}
+
+			return c.json(resp, 200);
+		});
+
+		query.post("/batch/", zValidator("json", BatchQuery), async (c) => {
+			let batchResp: Array<QueryResponse> = [];
+			try {
+				let batch = c.req.valid("json");
+				let statements: Array<D1PreparedStatement> = [];
+				for (let query of batch.batch) {
+					let stmt = c.env.DB.prepare(query.queryText);
+
+					if (query.params) {
+						statements.push(stmt.bind(...query.params));
+					} else {
+						statements.push(stmt);
+					}
+				}
+
+				console.log(statements);
+				let batchResults = await c.env.DB.batch(statements);
+				for (let result of batchResults) {
+					let queryResp: QueryResponse = {
+						results: result.results,
+						error: result.error,
+						meta: result.meta,
+					};
+					batchResp.push(queryResp);
+				}
+			} catch (err) {
+				let msg = `failed to batch query: ${err}`;
+				console.error(msg);
+				return c.json({ error: msg }, 500);
+			}
+
+			return c.json(batchResp);
+		});
+
+		app.all("/", async (c) => {
+			return c.json(app.showRoutes());
+		});
+
+		app.route("/query", query);
+		return app.fetch(request, env, ctx);
 	},
 };
