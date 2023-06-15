@@ -13,7 +13,7 @@ This API is designed to be used by _trusted_ clients: it assumes that the client
 To deploy this HTTP API in front of your D1 database:
 
 1. Create a D1 database: https://developers.cloudflare.com/d1/get-started/
-2. Clone the repo: `git clone https://github.com/elithrar/http-api-d1.git`
+2. Clone the repo: `git clone https://github.com/elithrar/http-api-d1-example.git`
 3. Install the dependencies: `npm i`
 4. Create a key via `openssl rand -base64 32` and `wrangler secret put APP_SECRET`
 5. Update `wrangler.toml` to include the binding for your `[[d1_databases]]` and add your `account_id` (or simply remove the placeholder)
