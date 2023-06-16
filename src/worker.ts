@@ -100,7 +100,7 @@ export default {
 				let query = c.req.valid("json");
 				let stmt = c.env.DB.prepare(query.queryText);
 				if (query.params) {
-					stmt = stmt.bind(query.params);
+					stmt = stmt.bind(...query.params);
 				}
 
 				let result = await stmt.all();
@@ -131,12 +131,13 @@ export default {
 				let out = await c.env.DB.exec(query.queryText);
 				resp = {
 					// @ts-expect-error Property 'count' does not exist on type 'D1Result<unknown>'
+					// Relates to https://github.com/cloudflare/workerd/pull/762
 					count: out?.count || 0,
 					// @ts-expect-error Property 'duration' does not exist on type 'D1Result<unknown>'
+					// Relates to https://github.com/cloudflare/workerd/pull/762
 					durationMs: out?.duration || 0,
 				};
 			} catch (err) {
-				// handle error
 				console.error(`failed to exec query: ${err}`);
 				return c.json({ error: err }, 500);
 			}
