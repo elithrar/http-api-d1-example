@@ -1,7 +1,6 @@
 {
-	"name": "http-api-d1",
-	"version": "0.0.2",
-	"private": true,
+	"name": "@elithrar/http-api-d1",
+	"version": "0.0.3",
 	"type": "module",
 	"exports": {
 		".": {
@@ -16,11 +15,13 @@
 	],
 	"scripts": {
 		"deploy": "wrangler publish",
-		"start": "wrangler dev"
+		"start": "wrangler dev",
+		"build": "npx unbuild"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20230419.0",
 		"typescript": "^5.0.4",
+		"unbuild": "^1.2.1",
 		"wrangler": "^3.1.0"
 	},
 	"dependencies": {

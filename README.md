@@ -24,10 +24,37 @@ To deploy this HTTP API in front of your D1 database:
 $ export D1_HTTP_TOKEN=tokenfromstep2above
 $ curl -H "Authorization: Bearer ${D1_HTTP_TOKEN}" "https://http-api-d1.<your-worker-subdomain>.workers.dev/query/all/" --data '{"queryText": "SELECT 1"}'
 ```
+
 ```json
 // Returns results resembling the below:
 {"results":[{"1":1}],"meta":{"duration":0.12522200029343367,"changes":0,"last_row_id":0,"changed_db":false,"size_after":167936}}%
 ```
+
+## Import as a library
+
+You can import the `D1HTTP` API and use it within an existing application:
+
+```sh
+$ npm i @elithrar/http-api-d1
+```
+
+In your existing application:
+
+```ts
+import { D1HTTP } from "@elithrar/http-api-d1";
+```
+
+From there, you can instantiate the `D1HTTP` class by passing it a `D1Database` and a `sharedSecret` (string) inside a `fetch()` handler:
+
+```ts
+export default {
+	async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+               const api = new D1API(env.DB, env.APP_SECRET)
+                // Pass our request, env and context to our new API
+                return api.run(req, env, ctx)
+        }
+```
+
 ## Endpoints
 
 This example exposes three (3) endpoints to a client.
@@ -35,13 +62,18 @@ This example exposes three (3) endpoints to a client.
 `/query/all/` - identical to D1's [`stmt.all()`](https://developers.cloudflare.com/d1/platform/client-api/#await-stmtall-column-) method and returns an array of rows.
 
 ```json
-{"queryText": "SELECT * FROM users WHERE id = ?", "params": "3819848"}
+{ "queryText": "SELECT * FROM users WHERE id = ?", "params": "3819848" }
 ```
 
 `/query/batch/` - identical to D1's [`db.batch()`](https://developers.cloudflare.com/d1/platform/client-api/#dbbatch) method, and accepts an array of queries and (optional) bound parameters.
 
 ```json
-{"batch":[{"queryText": "SELECT * FROM [Order] ORDER BY random() LIMIT 1"},{"queryText": "SELECT * FROM [Order] ORDER BY random() LIMIT 1"}]}
+{
+	"batch": [
+		{ "queryText": "SELECT * FROM [Order] ORDER BY random() LIMIT 1" },
+		{ "queryText": "SELECT * FROM [Order] ORDER BY random() LIMIT 1" }
+	]
+}
 ```
 
 `/query/exec` - identical to D1's [`db.exec()`](https://developers.cloudflare.com/d1/platform/client-api/#await-dbexec) method, and accepts a single-shot query.

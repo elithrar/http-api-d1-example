@@ -12,8 +12,8 @@ const schema = z.object({
 	age: z.number(),
 });
 
-// Bindings to our resources.
-type Bindings = {
+// Bindings to our Workers resources (D1 and our auth Secret)
+interface Env {
 	// The D1 database we want to expose over HTTP.
 	DB: D1Database;
 	// The secret our HTTP client needs to pass in to be valid.
@@ -22,7 +22,7 @@ type Bindings = {
 	// Tip: generate a random secret on the command-line:
 	// $ openssl rand -base64 32
 	APP_SECRET: string;
-};
+}
 
 const PreparedQuery = z.object({
 	// We set a reasonable limit on the statement length we'll accept.
@@ -59,57 +59,22 @@ const QueryResponse = z.object({
 });
 
 export class D1HTTP {
-	db: D1Database;
-	sharedSecret: string;
-	honoInstance: Hono;
+	private DB: D1Database;
+	private sharedSecret: string;
+	private honoInstance: Hono;
 
 	constructor(db: D1Database, sharedSecret: string, honoInstance?: Hono) {
-		this.db = db;
+		this.DB = db;
 		if (sharedSecret.length < MIN_SECRET_LENGTH) {
 			throw new Error(`sharedSecret not long enough: must be at least ${MIN_SECRET_LENGTH} bytes long`);
 		}
 
 		this.sharedSecret = sharedSecret;
 		this.honoInstance = honoInstance !== undefined ? honoInstance : new Hono();
-	}
-
-	app() {
-		return this.honoInstance;
-	}
-
-	run(req: Request, env: Env, ctx: ExecutionContext) {
-		return this.honoInstance.fetch(req, env, ctx);
-	}
-}
-
-export default {
-	async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		if (!env.DB) {
-			throw new Error(`A D1 database is not connected to the API. Confirm you have a [[d1_database]] binding called 'DB' created.`);
-		}
-
-		// Create a new instance of our D1 HTTP API for a given API and shared shared (for authenticating clients)
-		//
-		// - `env.DB` is a D1 database configured in either `wrangler.toml` or bound to our Pages application
-		// - `env.APP_SECRET` is the secret key we configured as a Wrangler secret - e.g. wrangler secret put APP_SECRET
-		const d1API = new D1HTTP(env.DB, env.APP_SECRET);
-		const app = d1API.app();
-		app.use("*", prettyJSON());
-		app.use("*", logger());
 
 		// Hono's route grouping API allows us to separate our `/query/*` routes.
 		// Docs: https://hono.dev/api/routing#grouping
-		const query = new Hono<{ Bindings: Bindings }>();
-
-		// The Bearer authentication middleware protects all routes in our
-		// "query" group and requires an Authorization HTTP header with our
-		// token to be provided.
-		//
-		// This is ideal for connecting a non-Workers backend, such as an
-		// existing Node.js app, Go API, or Rust backend, to D1.
-		//
-		// Important: Clients are presumed to be trusted.
-		query.use("*", bearerAuth({ token: d1API.sharedSecret }));
+		const query = new Hono<{}>();
 
 		// A single /all/ endpoint that accepts a single query and (optional)
 		// parameters to bind.
@@ -122,7 +87,7 @@ export default {
 			let resp: QueryResponse;
 			try {
 				let query = c.req.valid("json");
-				let stmt = c.env.DB.prepare(query.queryText);
+				let stmt = this.DB.prepare(query.queryText);
 				if (query.params) {
 					stmt = stmt.bind(...query.params);
 				}
@@ -152,7 +117,7 @@ export default {
 			let resp: ExecResponse;
 			try {
 				let query = c.req.valid("json");
-				let out = await c.env.DB.exec(query.queryText);
+				let out = await this.DB.exec(query.queryText);
 				resp = {
 					// @ts-expect-error Property 'count' does not exist on type 'D1Result<unknown>'
 					// Relates to https://github.com/cloudflare/workerd/pull/762
@@ -175,7 +140,7 @@ export default {
 				let batch = c.req.valid("json");
 				let statements: Array<D1PreparedStatement> = [];
 				for (let query of batch.batch) {
-					let stmt = c.env.DB.prepare(query.queryText);
+					let stmt = this.DB.prepare(query.queryText);
 
 					if (query.params) {
 						statements.push(stmt.bind(...query.params));
@@ -184,8 +149,7 @@ export default {
 					}
 				}
 
-				console.log(statements);
-				let batchResults = await c.env.DB.batch(statements);
+				let batchResults = await this.DB.batch(statements);
 				for (let result of batchResults) {
 					let queryResp: QueryResponse = {
 						results: result.results,
@@ -203,11 +167,54 @@ export default {
 			return c.json(batchResp);
 		});
 
-		app.all("/", async (c) => {
-			return c.json(app.showRoutes());
-		});
+		this.honoInstance.route("/query", query);
+	}
 
-		app.route("/query", query);
+	// Return the underlying Hono instance. This can be useful if you want to
+	// plug this into an existing application, configure middleware, or enable
+	// logging.
+	app(): Hono {
+		return this.honoInstance;
+	}
+
+	// Run the API by passing it a request, environment and context from within
+	// a Workers' fetch() handler.
+	run(req: Request, env: Env, ctx: ExecutionContext) {
+		// The Bearer authentication middleware protects all routes and requires
+		// an Authorization HTTP header with our token to be provided.
+		//
+		// This is ideal for connecting a non-Workers backend, such as an
+		// existing Node.js app, Go API, or Rust backend, to D1.
+		//
+		// Important: Clients are presumed to be trusted.
+		this.honoInstance.use("*", bearerAuth({ token: this.sharedSecret }));
+		return this.honoInstance.fetch(req, env, ctx);
+	}
+}
+
+export default {
+	async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		if (!env.DB) {
+			throw new Error(`A D1 database is not connected to the API. Confirm you have a [[d1_database]] binding called 'DB' created.`);
+		}
+
+		// Create a new instance of our D1 HTTP API for a given API and shared
+		// shared (for authenticating clients)
+		//
+		// - `env.DB` is a D1 database configured in either `wrangler.toml` or
+		//   bound to our Pages application
+		//
+		// - `env.APP_SECRET` is the secret key
+		//   we configured as a Wrangler secret - e.g. wrangler secret put
+		//   APP_SECRET
+		const d1API = new D1HTTP(env.DB, env.APP_SECRET);
+
+		// Get the underlying Hono instance so we can add our middleware
+		const app = d1API.app();
+		app.use("*", prettyJSON());
+		app.use("*", logger());
+
+		// Run our HTTP API and have it respond to queries!
 		return d1API.run(req, env, ctx);
 	},
 };
