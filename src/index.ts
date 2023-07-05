@@ -5,6 +5,8 @@ import { prettyJSON } from "hono/pretty-json";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 
+const MIN_SECRET_LENGTH = 16;
+
 const schema = z.object({
 	name: z.string(),
 	age: z.number(),
@@ -56,22 +58,44 @@ const QueryResponse = z.object({
 	meta: z.any().optional(),
 });
 
-export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const app = new Hono();
-		app.use("*", prettyJSON());
-		app.use("*", logger());
+export class D1HTTP {
+	db: D1Database;
+	sharedSecret: string;
+	honoInstance: Hono;
 
+	constructor(db: D1Database, sharedSecret: string, honoInstance?: Hono) {
+		this.db = db;
+		if (sharedSecret.length < MIN_SECRET_LENGTH) {
+			throw new Error(`sharedSecret not long enough: must be at least ${MIN_SECRET_LENGTH} bytes long`);
+		}
+
+		this.sharedSecret = sharedSecret;
+		this.honoInstance = honoInstance !== undefined ? honoInstance : new Hono();
+	}
+
+	app() {
+		return this.honoInstance;
+	}
+
+	run(req: Request, env: Env, ctx: ExecutionContext) {
+		return this.honoInstance.fetch(req, env, ctx);
+	}
+}
+
+export default {
+	async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		if (!env.DB) {
 			throw new Error(`A D1 database is not connected to the API. Confirm you have a [[d1_database]] binding called 'DB' created.`);
 		}
 
-		// `env.APP_SECRET` is the secret key we configured as a Wrangler secret
-		// e.g. wrangler secret put APP_SECRET
-		const authToken = env.APP_SECRET;
-		if (!authToken || authToken.length < 16) {
-			throw new Error(`'APP_SECRET' missing or shorter than 32 bytes (length: ${authToken?.length}): must configure a secret first.`);
-		}
+		// Create a new instance of our D1 HTTP API for a given API and shared shared (for authenticating clients)
+		//
+		// - `env.DB` is a D1 database configured in either `wrangler.toml` or bound to our Pages application
+		// - `env.APP_SECRET` is the secret key we configured as a Wrangler secret - e.g. wrangler secret put APP_SECRET
+		const d1API = new D1HTTP(env.DB, env.APP_SECRET);
+		const app = d1API.app();
+		app.use("*", prettyJSON());
+		app.use("*", logger());
 
 		// Hono's route grouping API allows us to separate our `/query/*` routes.
 		// Docs: https://hono.dev/api/routing#grouping
@@ -85,7 +109,7 @@ export default {
 		// existing Node.js app, Go API, or Rust backend, to D1.
 		//
 		// Important: Clients are presumed to be trusted.
-		query.use("*", bearerAuth({ token: authToken }));
+		query.use("*", bearerAuth({ token: d1API.sharedSecret }));
 
 		// A single /all/ endpoint that accepts a single query and (optional)
 		// parameters to bind.
@@ -184,6 +208,6 @@ export default {
 		});
 
 		app.route("/query", query);
-		return app.fetch(request, env, ctx);
+		return d1API.run(req, env, ctx);
 	},
 };

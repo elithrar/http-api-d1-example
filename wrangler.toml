@@ -1,5 +1,5 @@
 name = "http-api-d1"
-main = "src/worker.ts"
+main = "src/index.ts"
 compatibility_date = "2023-06-10"
 
 # Replace this with your Cloudflare account ID
