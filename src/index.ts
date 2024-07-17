@@ -75,6 +75,7 @@ export class D1HTTP {
 		// Hono's route grouping API allows us to separate our `/query/*` routes.
 		// Docs: https://hono.dev/api/routing#grouping
 		const query = new Hono<{}>();
+		query.use("*", bearerAuth({ token: this.sharedSecret }))
 
 		// A single /all/ endpoint that accepts a single query and (optional)
 		// parameters to bind.
